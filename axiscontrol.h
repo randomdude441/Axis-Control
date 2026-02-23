@@ -14,7 +14,7 @@ private:
 
 
 public:
-	std::shared_ptr<bool>  onAlways;
+	//std::shared_ptr<bool>  onAlways;
 	std::shared_ptr<std::string> command1;
 	std::shared_ptr<bool> forceUpdate;
 	void onLoad() override;
