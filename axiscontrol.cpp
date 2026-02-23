@@ -100,9 +100,9 @@ void GetControllerInput(std::shared_ptr<CVarManagerWrapper> cvarManager, std::sh
 void axiscontrol::onLoad()
 {
 	//cvarManager->log("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW ");
-
+    workWhileSpectating = make_shared<bool>(true);
 	cvarManager->registerCvar("axiscontrol_Spectator", "1", "work while spectating").bindTo(workWhileSpectating);
-	cvarManager->registerCvar("on_Always", "0", "make mod active at all times").bindTo(onAlways);
+	//cvarManager->registerCvar("on_Always", "0", "make mod active at all times").bindTo(onAlways);
 	forceUpdate = make_shared<bool>(true);
 	cvarManager->registerCvar("axiscontrol_ForceUpdate", "1", "Update values even at 0 or 255").bindTo(forceUpdate);
 
