@@ -1,2 +1,2 @@
 # Axis-Control
-rocket league mod that allows you to control any game variable using triggers or joystick values.
+Rocket league mod that allows you to control any game variable using triggers or joystick values. (work in progress)
