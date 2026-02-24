@@ -1,0 +1,22 @@
+# Visual Studio temporary files
+.vs/
+x64/
+Debug/
+Release/
+*.user
+*.aps
+*.pdb
+*.obj
+*.log
+*.tlog
+*.recipe
+*.iobj
+*.ipdb
+
+# VS Code settings
+.vscode/
+
+# Compiled plugin files
+*.dll
+*.lib
+*.exp
