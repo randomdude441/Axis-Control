@@ -17,22 +17,22 @@ using namespace std;
 
 BAKKESMOD_PLUGIN(axiscontrol, "control game variables with triggers and joysticks", "1.3", PLUGINTYPE_FREEPLAY)
 float savedSteer = 0;
-
+int lockedControllerIndex = -1; // Initialized to -1 (No controller locked)
 float LT = 0;
 float RT = 0;
-float LSUp= 0;
+float LSUp = 0;
 float LSDown = 0;
 float LSLeft = 0;
 float LSRight = 0;
 float RSUp = 0;
 float RSDown = 0;
 float RSLeft = 0;
-float RSRight= 0;
-float LSUD= 0;
-float RSUD= 0;
+float RSRight = 0;
+float LSUD = 0;
+float RSUD = 0;
 float LSLR = 0;
 float RSLR = 0;
-float bothTriggers= 0;
+float bothTriggers = 0;
 float numResult = 0;
 float leftCircle = 0;
 float rightCircle = 0;
@@ -55,7 +55,7 @@ std::map<std::string, float> previousVariables = {
 		{"rsud", RSUD},
 		{"lslr", LSLR},
 		{"rslr", RSLR},
-		{"bothtriggers", bothTriggers},
+		{"bt", bothTriggers},
 {"leftcircle", leftCircle },
 {"rightcircle", rightCircle },
 	{"leftmagnitude",leftMagnitude},
@@ -70,58 +70,50 @@ bool commandHasChanged = false;
 
 
 
-
-void GetControllerInput(std::shared_ptr<CVarManagerWrapper> cvarManager, std::shared_ptr<bool> forceUpdate) {
-	XINPUT_STATE state;
-	for (DWORD i = 0; i < 4; i++) {
-		ZeroMemory(&state, sizeof(XINPUT_STATE));
-		if (XInputGetState(i, &state) == ERROR_SUCCESS) {
-			float currentLT = state.Gamepad.bLeftTrigger / 255.0f;
-
-			// Now it can see forceUpdate
-			if (*forceUpdate || currentLT > 0.01f) {
-				LT = currentLT;
-				return;
-			}
-		}
-	}
-}
-//int main() {
-//	while (true) {
-		
-	//	Sleep(1);  // Wait 100ms between checks (adjust as needed)
-	//}
-//	return 0;
-//}
-
-
-
-
 void axiscontrol::onLoad()
 {
-	//cvarManager->log("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW ");
-    workWhileSpectating = make_shared<bool>(true);
-	cvarManager->registerCvar("axiscontrol_Spectator", "1", "work while spectating").bindTo(workWhileSpectating);
-	//cvarManager->registerCvar("on_Always", "0", "make mod active at all times").bindTo(onAlways);
-	forceUpdate = make_shared<bool>(true);
-	cvarManager->registerCvar("axiscontrol_ForceUpdate", "1", "Update values even at 0 or 255").bindTo(forceUpdate);
 
-	command1 = std::make_shared<std::string>("");
-	cvarManager->registerCvar("execCommand", "", "command to execute")
-		.bindTo(command1);
+	for (int i = 0; i < 9; i++) {
+		std::string cvarName = "aCommand" + std::to_string(i + 1);
+		execCommands[i] = std::make_shared<std::string>("");
+		cvarManager->registerCvar(cvarName, "", "Command " + std::to_string(i + 1) + " to execute").bindTo(execCommands[i]);
+
+		// FORCE SYNC
+		// Manually reach into the engine and pull the text immediately.
+		CVarWrapper cv = cvarManager->getCvar(cvarName);
+		if (cv) {
+			*execCommands[i] = cv.getStringValue();
+		}
+		lastExecutedCommands[i] = "";
+	}
+	// Default manual index to -1 (Auto)
+	manualControllerIndex = std::make_shared<int>(-1);
+	cvarManager->registerCvar("axiscontrol_ControllerIndex", "-1", "Locked controller index (-1 = Auto-find)", true, true, -1, true, 3).bindTo(manualControllerIndex);
+
+	showDebugInputs = std::make_shared<bool>(false);
+	cvarManager->registerCvar("axiscontrol_logInputs", "0", "Show live controller values in console", true, true, 0, true, 1).bindTo(showDebugInputs);
+	forceExecuteCommand = make_shared<bool>(false);
+	cvarManager->registerCvar("axiscontrol_ForceExecute", "0", "Always use executeCommand").bindTo(forceExecuteCommand);
+	logMode = make_shared<int>(0); // Default to 0 (no console logs whenever possible)
+	cvarManager->registerCvar("axiscontrol_LogMode", "0", "0=None, 1=On Change, 2=Always", true, true, 0, true, 2).bindTo(logMode);
+	//cvarManager->log("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW ");
+	workWhileSpectating = make_shared<bool>(false);
+	cvarManager->registerCvar("axiscontrol_workWhileSpectating", "0", "work while spectating").bindTo(workWhileSpectating);
+	//cvarManager->registerCvar("on_Always", "0", "make mod active at all times").bindTo(onAlways);
+	
 
 	gameWrapper->HookEvent("Function GameEvent_Soccar_TA.ReplayPlayback.BeginState", [&](std::string eventName) {isInGoalReplay = true; });
 	gameWrapper->HookEvent("Function GameEvent_Soccar_TA.ReplayPlayback.EndState", [&](std::string eventName) {isInGoalReplay = false; });
 
 	gameWrapper->RegisterDrawable(bind(&axiscontrol::Render, this, std::placeholders::_1));
 
-	
 
 
-	
+
+
 	/*
+
 	
-	*/
 	gameWrapper->HookEventWithCaller<CarWrapper>("Function TAGame.Car_TA.SetVehicleInput",
 		[this](CarWrapper caller, void* params, std::string eventName) {
 			ControllerInput* input = reinterpret_cast<ControllerInput*>(params);
@@ -147,8 +139,79 @@ void axiscontrol::onLoad()
 			//	cvarManager->getCvar("sv_soccar_gamespeed").setValue(.999f + .999f * savedSteer + .001f);
 			//}
 		});
-	
+		*/
 }
+
+void axiscontrol::GetControllerInput(std::shared_ptr<CVarManagerWrapper> cvarManager){
+	XINPUT_STATE state;
+
+	// 1. Sync the locked index with the manual CVar
+
+	lockedControllerIndex = *manualControllerIndex;
+
+	// 2. If index is -1, search all ports for any input
+	if (lockedControllerIndex == -1) {
+		for (DWORD i = 0; i < 4; i++) {
+			ZeroMemory(&state, sizeof(XINPUT_STATE));
+			if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+
+				// Check for any significant input (Triggers or Sticks)
+				bool hasInput = (state.Gamepad.bLeftTrigger > 10 || state.Gamepad.bRightTrigger > 10 ||
+					abs(state.Gamepad.sThumbLX) > 5000 || abs(state.Gamepad.sThumbLY) > 5000 ||
+					abs(state.Gamepad.sThumbRX) > 5000 || abs(state.Gamepad.sThumbRY) > 5000);
+
+				if (hasInput) {
+					// controller found. Update the CVar so we stay locked to it
+					cvarManager->getCvar("axiscontrol_ControllerIndex").setValue((int)i);
+					return; // Next frame will use the locked index logic below
+				}
+			}
+		}
+	}
+	// 3. If an index is locked, only check that specific port
+	else {
+		ZeroMemory(&state, sizeof(XINPUT_STATE));
+		if (XInputGetState((DWORD)lockedControllerIndex, &state) == ERROR_SUCCESS) {
+
+			// Assign ALL variables from the locked controller
+			LT = state.Gamepad.bLeftTrigger / 255.0f;
+			RT = state.Gamepad.bRightTrigger / 255.0f;
+			bothTriggers = RT - LT;
+
+			LSLR = (state.Gamepad.sThumbLX >= 0) ? (state.Gamepad.sThumbLX / 32767.0f) : (state.Gamepad.sThumbLX / 32768.0f);
+			LSUD = (state.Gamepad.sThumbLY >= 0) ? (state.Gamepad.sThumbLY / 32767.0f) : (state.Gamepad.sThumbLY / 32768.0f);
+			RSLR = (state.Gamepad.sThumbRX >= 0) ? (state.Gamepad.sThumbRX / 32767.0f) : (state.Gamepad.sThumbRX / 32768.0f);
+			RSUD = (state.Gamepad.sThumbRY >= 0) ? (state.Gamepad.sThumbRY / 32767.0f) : (state.Gamepad.sThumbRY / 32768.0f);
+
+			// Breakouts...
+			LSUp = (LSUD > 0) ? LSUD : 0; LSDown = (LSUD < 0) ? -LSUD : 0;
+			LSLeft = (LSLR < 0) ? -LSLR : 0; LSRight = (LSLR > 0) ? LSLR : 0;
+			RSUp = (RSUD > 0) ? RSUD : 0; RSDown = (RSUD < 0) ? -RSUD : 0;
+			RSLeft = (RSLR < 0) ? -RSLR : 0; RSRight = (RSLR > 0) ? RSRight : 0;
+
+			buttonX = (state.Gamepad.wButtons & XINPUT_GAMEPAD_X) != 0;
+			buttonY = (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+		}
+		else {
+			// Controller disconnected? Revert to auto-find
+			cvarManager->getCvar("axiscontrol_ControllerIndex").setValue(-1);
+		}
+	}
+}
+
+
+
+//int main() {
+//	while (true) {
+
+	//	Sleep(1);  // Wait 100ms between checks (adjust as needed)
+	//}
+//	return 0;
+//}
+
+
+
+
 // Function to get the precedence of an operator
 int getPrecedence(char op) {
 	switch (op) {
@@ -279,15 +342,15 @@ double evaluateExpression(const std::string& expression) {
 	return numStack.top();
 }
 // Function to replace variable names with their values (case-insensitive)
+// Helper to identify "Placeholder" minus
+const char MINUS_PLACEHOLDER = '~';
+
 std::string replaceVariables(const std::string& input) {
-	size_t spacePos = input.find(' ');
-	if (spacePos == std::string::npos) return "";
+	std::string output = input;
+	std::string lowerOutput = input;
+	std::transform(lowerOutput.begin(), lowerOutput.end(), lowerOutput.begin(), ::tolower);
 
-	std::string prefix = input.substr(0, spacePos + 1);
-	std::string expression = input.substr(spacePos + 1);
-	std::transform(expression.begin(), expression.end(), expression.begin(), ::tolower);
-
-	// 1. Update all variables in the map with their current live values
+	// 1. Update Map
 	variablesUsed["lt"] = LT;
 	variablesUsed["rt"] = RT;
 	variablesUsed["lsup"] = LSUp;
@@ -302,39 +365,134 @@ std::string replaceVariables(const std::string& input) {
 	variablesUsed["rsud"] = RSUD;
 	variablesUsed["lslr"] = LSLR;
 	variablesUsed["rslr"] = RSLR;
-	variablesUsed["bothtriggers"] = bothTriggers;
+	variablesUsed["bt"] = bothTriggers;
 
-	// 2. Loop through the map and replace every abbreviation found in the command
+	for (size_t i = 0; i < output.length(); ++i) {
+		if (i > 0) {
+			// Case: 1000( -> 1000*(
+			if (output[i] == '(' && std::isdigit(output[i - 1])) {
+				output.insert(i, "*");
+				lowerOutput.insert(i, "*");
+				i++;
+			}
+			// Case: )1000 -> )*1000 or )rt -> )*rt
+			else if (output[i - 1] == ')' && (std::isdigit(output[i]) || std::isalpha(output[i]))) {
+				output.insert(i, "*");
+				lowerOutput.insert(i, "*");
+				i++;
+			}
+		}
+	}
 	for (auto const& [name, value] : variablesUsed) {
-		size_t pos = expression.find(name);
+		size_t pos = lowerOutput.find(name);
 		while (pos != std::string::npos) {
-			// Check if there's a digit immediately before the variable (e.g., "2lt")
-			// and insert a '*' if needed to prevent math errors
-			if (pos > 0 && std::isdigit(expression[pos - 1])) {
-				expression.insert(pos, "*");
+			// Logic 1: Insert '*' if preceded by a digit (e.g. 2lt -> 2*lt)
+			if (pos > 0 && (std::isdigit(lowerOutput[pos - 1]))) {
+				output.insert(pos, "*");
+				lowerOutput.insert(pos, "*");
 				pos++;
 			}
 
-			expression.replace(pos, name.length(), std::to_string(value));
-			pos = expression.find(name, pos + std::to_string(value).length());
+			// Logic 2: Format the value
+			// If negative, use ~1.5. If positive, use 1.5
+			std::stringstream ss;
+			ss << std::fixed << std::setprecision(4);
+			if (value < 0) {
+				ss << MINUS_PLACEHOLDER << std::abs(value);
+			}
+			else {
+				ss << value; 
+			}
+			std::string valStr = ss.str();
+
+			output.replace(pos, name.length(), valStr);
+			lowerOutput.replace(pos, name.length(), valStr);
+
+			pos = lowerOutput.find(name, pos + valStr.length());
 		}
 	}
-
-	// 3. Evaluate the final math expression
-	try {
-		double result = evaluateExpression(expression);
-
-		std::stringstream ss;
-		ss << std::fixed << std::setprecision(2) << result;
-		return prefix + ss.str();
-	}
-	catch (...) {
-		// Returns empty if the math is invalid (e.g. division by zero)
-		return "";
-	}
+	return output;
 }
 
+bool isOperator(char c) {
+	return c == '+' || c == '-' || c == '*' || c == '/' || c == '^' || c == '(' || c == ')';
+}
 
+// Function to clean spaces around operators but keep spaces between distinct numbers
+// Input: "bakkes 5 + ~3"  -> Output: "bakkes 5+~3"
+// Input: "set_pos 5 ~3"   -> Output: "set_pos 5 ~3" (Space preserved)
+std::string squashOperators(const std::string& input) {
+	std::string result = "";
+	for (size_t i = 0; i < input.length(); ++i) {
+		char c = input[i];
+		if (c == ' ') {
+			// Check if this space is "glue" for an operator
+			bool prevIsOp = (i > 0 && isOperator(input[i - 1]));
+			bool nextIsOp = (i + 1 < input.length() && isOperator(input[i + 1]));
+
+			// If neither side is an operator, it's a real separator (keep the space)
+			if (!prevIsOp && !nextIsOp) {
+				result += c;
+			}
+		}
+		else {
+			result += c;
+		}
+	}
+	return result;
+}
+
+// Function to break the string into chunks, evaluate math, and rebuild
+std::string solveComplexCommand(std::string input) {
+	// 1. Remove spaces that are part of math equations
+	std::string squashed = squashOperators(input);
+
+	std::stringstream resultSS;
+	std::stringstream tokenStream(squashed);
+	std::string segment;
+
+	bool first = true;
+
+	// 2. Split by remaining spaces
+	while (std::getline(tokenStream, segment, ' ')) {
+		if (segment.empty()) continue;
+		if (!first) resultSS << " ";
+		first = false;
+
+		// 3. Detect if this segment needs math evaluation
+		// It needs math if it has an operator OR the placeholder minus
+		bool needsMath = false;
+		for (char c : segment) {
+			if (isOperator(c) || c == MINUS_PLACEHOLDER) {
+				needsMath = true;
+				break;
+			}
+		}
+
+		if (needsMath) {
+			// Restore the real minus sign
+			std::string mathString = segment;
+			std::replace(mathString.begin(), mathString.end(), MINUS_PLACEHOLDER, '-');
+
+			try {
+				float val = (float)evaluateExpression(mathString);
+				// remove trailing zeros logic could go here, but simple to_string is safe
+				resultSS << std::to_string(val);
+			}
+			catch (...) {
+				// If math fails (e.g. it was just a word with a hyphen), keep original
+				// But we must restore the placeholder in the original text if it existed
+				std::replace(segment.begin(), segment.end(), MINUS_PLACEHOLDER, '-');
+				resultSS << segment;
+			}
+		}
+		else {
+			// No math here (just a word like "set_pos" or a plain number "4")
+			resultSS << segment;
+		}
+	}
+	return resultSS.str();
+}
 
 void axiscontrol::onUnload() {}
 
@@ -347,31 +505,64 @@ ServerWrapper axiscontrol::GetCurrentGameState()
 	else
 		return gameWrapper->GetGameEventAsServer();
 }
-
-
 void axiscontrol::executeCommands() {
-	// PROTECT: Never run in online games
-	if (gameWrapper->IsInOnlineGame() || gameWrapper->IsInReplay()) return;
 
-	CVarWrapper cmdCvar = cvarManager->getCvar("execCommand");
-	if (!cmdCvar) return;
+	static int logTimer = 0;
+	logTimer++;
 
-	std::string cmd = cmdCvar.getStringValue();
-	if (cmd.empty()) return;
+	// Loop through all 9 possible command slots
+	for (int i = 0; i < 9; i++) {
+		std::string cmd = *execCommands[i];
+		if (cmd.empty()) continue; // Skip if the user cleared the command
 
-	std::string replaced = replaceVariables(cmd);
+		// 1. Variable Replacement (Using your Placeholder logic)
+		std::string replaced = replaceVariables(cmd);
+		if (replaced.empty() || replaced == cmd) continue;
 
-	if (!replaced.empty() && replaced != cmd) {
-		cvarManager->executeCommand(replaced);
+		// 2. Solve the command (Math and Token logic)
+		std::string finalCommandString = solveComplexCommand(replaced);
 
-		static int logTimer = 0;
-		if (logTimer++ % 120 == 0) {
-			cvarManager->log("Executing: " + replaced);
+		// 3. Determine Logging/Execution needs
+		bool shouldLogToConsole = false;
+		bool shouldExecute = false;
+
+		if (*logMode == 2) {
+			if (logTimer % 120 == 0) { shouldLogToConsole = true; shouldExecute = true; }
+			else if (finalCommandString != lastExecutedCommands[i]) { shouldExecute = true; }
+		}
+		else if (*logMode == 1) {
+			if (finalCommandString != lastExecutedCommands[i]) { shouldLogToConsole = true; shouldExecute = true; }
+		}
+		else if (*logMode == 0) {
+			if (finalCommandString != lastExecutedCommands[i]) { shouldExecute = true; }
+		}
+
+		// 4. Execution
+		if (shouldExecute) {
+			bool silentSuccess = false;
+
+			// Try silent setValue if not forcing complex and no logging required
+			if (!*forceExecuteCommand && !shouldLogToConsole) {
+				size_t spacePos = finalCommandString.find(' ');
+				if (spacePos != std::string::npos && finalCommandString.find(' ', spacePos + 1) == std::string::npos) {
+					std::string cvarName = finalCommandString.substr(0, spacePos);
+					try {
+						float val = std::stof(finalCommandString.substr(spacePos + 1));
+						CVarWrapper target = cvarManager->getCvar(cvarName);
+						if (target) { target.setValue(val); silentSuccess = true; }
+					}
+					catch (...) {}
+				}
+			}
+
+			if (!silentSuccess) {
+				cvarManager->executeCommand(finalCommandString, shouldLogToConsole);
+			}
+
+			lastExecutedCommands[i] = finalCommandString;
 		}
 	}
 }
-
-
 void axiscontrol::Render(CanvasWrapper canvas)
 {
 	//if (gameWrapper->IsInFreeplay()) {
@@ -396,41 +587,43 @@ void axiscontrol::Render(CanvasWrapper canvas)
 		if (online && !gameWrapper->GetLocalCar().IsNull())
 			return;//only allow it in online if player is spectating (controllable car does not exist)
 	}
-	PriWrapper target = PriWrapper(reinterpret_cast<std::uintptr_t>(gameWrapper->GetCamera().GetViewTarget().PRI));
-	if (target.IsNull()) return;
-	CarWrapper car = target.GetCar();
-	if (car.IsNull()) return;
+	//PriWrapper target = PriWrapper(reinterpret_cast<std::uintptr_t>(gameWrapper->GetCamera().GetViewTarget().PRI));
+	//if (target.IsNull()) return;
+	//CarWrapper car = target.GetCar();
+	//if (car.IsNull()) return;
 
+	if (*showDebugInputs) {
+		cvarManager->log("_________________________________");
+		cvarManager->log("LT: " + std::to_string(LT));
+		cvarManager->log("RT: " + std::to_string(RT));
+		cvarManager->log("BT: " + std::to_string(bothTriggers));
+		cvarManager->log("LSUp: " + std::to_string(LSUp));
+		cvarManager->log("LSDown: " + std::to_string(LSDown));
+		cvarManager->log("LSLeft: " + std::to_string(LSLeft));
+		cvarManager->log("LSRight: " + std::to_string(LSRight));
+		cvarManager->log("RSUp: " + std::to_string(RSUp));
+		cvarManager->log("RSDown: " + std::to_string(RSDown));
+		cvarManager->log("RSLeft: " + std::to_string(RSLeft));
+		cvarManager->log("RSRight: " + std::to_string(RSRight));
+		cvarManager->log("LSUD: " + std::to_string(LSUD));
+		cvarManager->log("RSUD: " + std::to_string(RSUD));
+		cvarManager->log("LSLR: " + std::to_string(LSLR));
+		cvarManager->log("RSLR: " + std::to_string(RSLR));
+	}
 	/*
-	cvarManager->log("LT: " + std::to_string( LT ));
-	cvarManager->log("RT: " + std::to_string( RT ));
-	cvarManager->log("LSUp: " + std::to_string( LSUp ));
-	cvarManager->log("LSDown: " + std::to_string( LSDown ));
-	cvarManager->log("LSLeft: " + std::to_string( LSLeft ));
-	cvarManager->log("LSRight: " + std::to_string( LSRight ));
-	cvarManager->log("RSUp: " + std::to_string( RSUp ));
-	cvarManager->log("RSDown: " + std::to_string( RSDown ));
-	cvarManager->log("RSLeft: " + std::to_string( RSLeft ));
-	cvarManager->log("RSRight: " + std::to_string( RSRight ));
-	cvarManager->log("LSUD: " + std::to_string( LSUD ));
-	cvarManager->log("RSUD: " + std::to_string( RSUD ));
-	cvarManager->log("LSLR: " + std::to_string( LSLR ));
-	cvarManager->log("RSLR: " + std::to_string( RSLR ));
-	cvarManager->log("bothTriggers: " + std::to_string( bothTriggers ));
-	
 	cvarManager->log("buttonX: " + std::to_string(buttonX));
 	cvarManager->log("buttonY: " + std::to_string(buttonY));
 	*/
-	
-
-		//if (cvarManager->getCvar("sv_soccar_gamespeed").getFloatValue() != (1.0f + 1.0f * LSUD)) {
-		//	cvarManager->getCvar("sv_soccar_gamespeed").setValue(1.0f + 1.0f * LSUD);
-		//	cvarManager->log("" + std::to_string(LSUD));
-		//}
 
 
+	//if (cvarManager->getCvar("sv_soccar_gamespeed").getFloatValue() != (1.0f + 1.0f * LSUD)) {
+	//	cvarManager->getCvar("sv_soccar_gamespeed").setValue(1.0f + 1.0f * LSUD);
+	//	cvarManager->log("" + std::to_string(LSUD));
+	//}
 
-	GetControllerInput(cvarManager, forceUpdate);
+
+
+	GetControllerInput(cvarManager);
 	executeCommands();
 
 }
