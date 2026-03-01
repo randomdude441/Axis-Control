@@ -61,10 +61,10 @@
     <ClInclude Include="axiscontrol.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="G:\Games\steamapps\common\rocketleague\Binaries\Win32\bakkesmod\plugins\settings\axiscontrol.set" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 
 </Project>
+
